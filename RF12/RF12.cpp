@@ -15,22 +15,21 @@
 #define RF_MAX   (RF12_MAXDATA + 5)
 
 /* SPI CONFIGURATION: */
-#define SPI_HW   SPI2
-
-
-#define RFM_IRQ  20
+#define SPI_NUM   1
+//#define RFM_IRQ  20
+#define RFM_IRQ  9 //convenient location on DIG4 connector of Olimexino-STM32
 uint32 cfg_flags16 = SPI_FRAME_MSB | SPI_DFF_16_BIT | SPI_SW_SLAVE | SPI_SOFT_SS;
 
-#if (SPI_HW == SPI2)
-
+#if SPI_NUM == 2
+  #define SPI_HW   SPI2
   #define SS_PORT  GPIOB  // the port the SS pin is on  (GPIOA for SPI1, GPIOB for SPI2 on STM32F103)
   #define SS_BIT   12     // This is the same as the hardware SS pn (4 on SPI1, 12 on SPI2 on STM32F103)
   #define SPI_SS   31     // do not change, must point to h/w SPI pin
   #define SPI_MOSI 34 	   
   #define SPI_MISO 33 	
   #define SPI_SCK  32 	
-#elif (SPI_HW == SPI1)
-
+#elif SPI_NUM == 1
+  #define SPI_HW   SPI1
   #define SS_PORT  GPIOA  // the port the SS pin is on  (GPIOA for SPI1, GPIOB for SPI2 on STM32F103)
   #define SS_BIT   4      // This is the same as the hardware SS pn (4 on SPI1, 12 on SPI2 on STM32F103)
   #define SPI_SS   10     // do not change, must point to h/w SPI pin
@@ -49,7 +48,7 @@ uint32 cfg_flags16 = SPI_FRAME_MSB | SPI_DFF_16_BIT | SPI_SW_SLAVE | SPI_SOFT_SS
 #define RF_TXREG_WRITE  0xB800
 #define RF_RX_FIFO_READ 0xB000
 #define RF_WAKEUP_TIMER 0xE000
-
+#define RF_STATUS_READ  0x0000
 
 // RF12 status bits
 #define RF_LBD_BIT      0x0400
@@ -83,7 +82,7 @@ static long ezNextSend[2];          // when was last retry [0] or data [1] sent
 
 volatile uint16_t rf12_crc;         // running crc value
 volatile uint8_t rf12_buf[RF_MAX];  // recv/xmit buf, including hdr & crc bytes
-
+volatile uint16_t rf12_statusbuf[RF_MAX];  // recv/xmit status buf
 long rf12_seq;                      // seq number of encrypted packet (or -1)
 
 static uint32_t seqNum;             // encrypted send sequence number
@@ -103,21 +102,6 @@ uint16_t _crc16_update(uint16_t crc, uint8_t a) {
 	return crc;
 }
 
-
-static void spi_initialize () {
-	pinMode(SPI_SS,OUTPUT);
-	spi_init(SPI_HW);
-	spi_gpio_cfg(true, SS_PORT, SS_BIT, SS_PORT, SS_BIT+1, SS_BIT+2, SS_BIT+3);
-    spi_master_enable(SPI_HW,SPI_BAUD_PCLK_DIV_32, SPI_MODE_0, cfg_flags16 );
-    pinMode(SPI_SS,OUTPUT);
-    pinMode(RFM_IRQ, INPUT_PULLUP);  
-    attachInterrupt(RFM_IRQ, rf12_interrupt, FALLING);
-    if (LOW == digitalRead(RFM_IRQ)){          
-       rf12_interrupt();
-    }          
-    
-}
-
 static uint8_t rf12_byte (uint8_t out) {  
     uint16 outcmd=out;
     while (!spi_is_tx_empty(SPI_HW));			// wait until last transmission is done
@@ -134,25 +118,25 @@ static uint16_t rf12_xfer (uint16_t cmd) {  //returns 16 bit int while sending a
 	while (!spi_is_rx_nonempty(SPI_HW));      //wait until answer is received
 	uint16_t reply = spi_rx_reg(SPI_HW);
     gpio_write_bit(SS_PORT, SS_BIT, 1);     //set ss line high after sending command  
-
-
-
+    //SerialUSB.print(cmd, HEX);
+    //SerialUSB.print(" --> ");
+    //SerialUSB.println(reply, HEX);
 
     return reply;
 
 }
 static void rf12_interrupt() { 
-    rf12_xfer(0x0000);
+    uint16_t status = rf12_xfer(0x0000);
     
     if (rxstate == TXRECV) {  //if in recieve state
         uint8_t in = rf12_xfer(RF_RX_FIFO_READ);
 
-        if (rxfill == 0 && group != 0)
-
+        if (rxfill == 0 && group != 0){
+            rf12_statusbuf[rxfill]=0;
             rf12_buf[rxfill++] = group;
-
+            }
             
-
+        rf12_statusbuf[rxfill]=status;
         rf12_buf[rxfill++] = in;
         rf12_crc = _crc16_update(rf12_crc, in);
 
@@ -179,18 +163,18 @@ static void rf12_interrupt() {
     }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
+static void spi_initialize () {
+	pinMode(SPI_SS,OUTPUT);
+	spi_init(SPI_HW);
+	spi_gpio_cfg(true, SS_PORT, SS_BIT, SS_PORT, SS_BIT+1, SS_BIT+2, SS_BIT+3);
+    spi_master_enable(SPI_HW,SPI_BAUD_PCLK_DIV_32, SPI_MODE_0, cfg_flags16 );
+    pinMode(SPI_SS,OUTPUT);
+    pinMode(RFM_IRQ, INPUT_PULLUP);  
+    attachInterrupt(RFM_IRQ, rf12_interrupt, FALLING);
+    if (LOW == digitalRead(RFM_IRQ)){          
+       rf12_interrupt();
+    }          
+}
 
 // access to the RFM12B internal registers with rf12 interrupt disabled
 uint16_t rf12_control(uint16_t cmd) {
@@ -198,7 +182,7 @@ uint16_t rf12_control(uint16_t cmd) {
     detachInterrupt(RFM_IRQ);
     retval = rf12_xfer(cmd);
     attachInterrupt(RFM_IRQ, rf12_interrupt, FALLING);
-    /* Since we canÂ´t trigger RFM_IRQ to LOW and the Interrupt handler was disabled for some cycles
+    /* Since we can´t trigger RFM_IRQ to LOW and the Interrupt handler was disabled for some cycles
        a manual check is needed. A race condition should be impossible because rf12_interrupt is only triggered on FALLING LOW */
     if (LOW == digitalRead(RFM_IRQ)){          
       rf12_interrupt();
@@ -240,7 +224,7 @@ uint8_t rf12_recvDone () {
 
 uint8_t rf12_canSend () {
     if (rxstate == TXRECV && rxfill == 0 &&
-            ((rf12_xfer(RF_STATUS_READ)) & (RFM12_STATUS_RSSI >> 8)) == 0) {
+            ((rf12_xfer(RF_STATUS_READ)) & RF_RSSI_BIT) == 0) {
         rf12_control(RF_IDLE_MODE);
         rxstate = TXIDLE;
         rf12_grp = group;
@@ -275,19 +259,19 @@ void rf12_sendStart (uint8_t hdr, const void* ptr, uint8_t len, uint8_t sync) {
     rf12_sendWait(sync);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
+/// @details
+/// Wait until transmission is possible, then start it as soon as possible.
+/// @note This uses a (brief) busy loop and will discard any incoming packets.
+/// @param hdr The header contains information about the destination of the
+///            packet to send, and flags such as whether this should be
+///            acknowledged - or if it actually is an acknowledgement.
+/// @param ptr Pointer to the data to send as packet.
+/// @param len Number of data bytes to send. Must be in the range 0 .. 65.
+void rf12_sendNow (uint8_t hdr, const void* ptr, uint8_t len) {
+  while (!rf12_canSend())
+    rf12_recvDone(); // keep the driver state machine going, ignore incoming
+  rf12_sendStart(hdr, ptr, len);
+}
 
 void rf12_sendWait (uint8_t mode) {
     // wait for packet to actually finish sending
@@ -318,17 +302,17 @@ void rf12_initialize (uint8_t id, uint8_t band, uint8_t g) {
     nodeid = id;
     group = g;
     band = RF12_868MHZ; //FIXME band is not set on stm32 yet, because we do not read the eeprom
-
-
-
-
-
-
-
-
-
-
-
+    //SerialUSB.print("settings: ");
+    //SerialUSB.print(id);
+    //SerialUSB.print(" ");
+    //SerialUSB.print(band);
+    //SerialUSB.print(" ");
+    //SerialUSB.println(g);
+    
+    long previousMillis = millis();
+    long currentMillis = previousMillis;
+    //previousMillis = millis();
+    currentMillis = previousMillis;
     
     spi_initialize();
 	
@@ -348,25 +332,25 @@ void rf12_initialize (uint8_t id, uint8_t band, uint8_t g) {
       SerialUSB.println("IRQ Error");
     }
     rf12_xfer(0x80C7 | (band << 4)); // EL (ena TX), EF (ena RX FIFO), 12.0pF 
-    rf12_xfer(0xA640); // 868MHz    //this could be a problem as we use 433MHZ
-
+    //rf12_xfer(0xA640); // 868MHz    //this could be a problem as we use 433MHZ
+    rf12_xfer(0xA64C); // 868MHz    //this could be a problem as we use 433MHZ
     rf12_xfer(0xC606); // approx 49.2 Kbps, i.e. 10000/29/(1+6) Kbps
-
-    rf12_xfer(0x94A2); // VDI,FAST,134kHz,0dBm,-91dBm 
-
-
+    //rf12_xfer(0x94A5); // VDI,FAST,134kHz,0dBm,-73dBm 
+    //rf12_xfer(0x94A2); // VDI,FAST,134kHz,0dBm,-91dBm 
+    //rf12_xfer(0x94A1); // VDI,FAST,134kHz,0dBm,-97dBm 
+    rf12_xfer(0x94A2); // VDI,FAST,134kHz,0dBm,-103dBm 
     rf12_xfer(0xC2AC); // AL,!ml,DIG,DQD4 
     
     if (group != 0) {
         rf12_xfer(0xCA83); // FIFO8,2-SYNC,!ff,DR 
-        rf12_xfer(0xCE00 | group); // SYNC=2DXXï¼› 
+        rf12_xfer(0xCE00 | group); // SYNC=2DXX； 
     } else {
         rf12_xfer(0xCA8B); // FIFO8,1-SYNC,!ff,DR 
-        rf12_xfer(0xCE2D); // SYNC=2Dï¼› 
+        rf12_xfer(0xCE2D); // SYNC=2D； 
     }
     rf12_xfer(0xC483); // @PWR,NO RSTRIC,!st,!fi,OE,EN 
     rf12_xfer(0x9850); // !mp,90kHz,MAX OUT 
-    rf12_xfer(0xCC77); // OB1ï¼ŒOB0, LPX,ï¼ddyï¼ŒDDITï¼ŒBW0 
+    rf12_xfer(0xCC77); // OB1，OB0, LPX,！ddy，DDIT，BW0 
     rf12_xfer(0xE000); // NOT USE 
     rf12_xfer(0xC800); // NOT USE 
     rf12_xfer(0xC049); // 1.66MHz,3.1V 
@@ -375,7 +359,7 @@ void rf12_initialize (uint8_t id, uint8_t band, uint8_t g) {
     
     if ((nodeid & NODE_ID) != 0){
         //note currently the NIRQ channel appears to stay high, indicating it is never ready
-
+        //attachInterrupt(RFM_IRQ, rf12_interrupt, FALLING);//old attachInterrupt(0, rf12_interrupt, LOW); //changed to the the NIRQ pin on the battle blimps board
         attachInterrupt(RFM_IRQ, rf12_interrupt, FALLING);//old attachInterrupt(0, rf12_interrupt, LOW); //changed to the the NIRQ pin on the battle blimps board
 		}
     else

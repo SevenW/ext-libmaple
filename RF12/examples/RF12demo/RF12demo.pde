@@ -1,30 +1,28 @@
-
-// Configure some values in EEPROM for easy config of the RF12 later on.
-// 2009-05-06 <jcw@equi4.com> http://opensource.org/licenses/mit-license.php
-// $Id: RF12demo.pde 7754 2011-08-22 11:38:59Z jcw $
+/// @dir RF12demo
+/// Configure some values in EEPROM for easy config of the RF12 later on.
+// 2009-05-06 <jc@wippler.nl> http://opensource.org/licenses/mit-license.php
 
 // this version adds flash memory support, 2009-11-19
 
-#include <Ports.h>
-#include <RF12.h>
+#include <JeeLib.h>
 #include <util/crc16.h>
 #include <util/parity.h>
 #include <avr/eeprom.h>
 #include <avr/pgmspace.h>
 
+// ATtiny's only support outbound serial @ 38400 baud, and no DataFlash logging
 
-
-
-
-
-
+#if defined(__AVR_ATtiny84__) ||defined(__AVR_ATtiny44__)
+#define SERIAL_BAUD 38400
+#else
+#define SERIAL_BAUD 57600
 
 #define DATAFLASH   1   // check for presence of DataFlash memory on JeeLink
 #define FLASH_MBIT  16  // support for various dataflash sizes: 4/8/16 Mbit
 
 #define LED_PIN     9   // activity LED, comment out to disable
 
-
+#endif
 
 #define COLLECT 0x20 // collect mode, i.e. pass incoming without sending acks
 
@@ -528,7 +526,7 @@ static void df_replay (word seqnum, long asof) {
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-char helpText1[] PROGMEM = 
+const char helpText1[] PROGMEM = 
     "\n"
     "Available commands:" "\n"
     "  <nn> i     - set node ID (standard node ids are 1..26)" "\n"
@@ -541,12 +539,12 @@ char helpText1[] PROGMEM =
     "  ...,<nn> s - send data packet to node <nn>, no ack" "\n"
     "  <n> l      - turn activity LED on PB1 on or off" "\n"
     "  <n> q      - set quiet mode (1 = don't report bad packets)" "\n"
-
+    "  123 z      - total power down, needs a reset to start up again" "\n"
     "Remote control commands:" "\n"
     "  <hchi>,<hclo>,<addr>,<cmd> f     - FS20 command (868 MHz)" "\n"
     "  <addr>,<dev>,<on> k              - KAKU command (433 MHz)" "\n"
 ;
-char helpText2[] PROGMEM = 
+const char helpText2[] PROGMEM = 
     "Flash storage (JeeLink only):" "\n"
     "  d                                - dump all log markers" "\n"
     "  <sh>,<sl>,<t3>,<t2>,<t1>,<t0> r  - replay from specified marker" "\n"
@@ -670,14 +668,14 @@ static void handleInput (char c) {
             case 'q': // turn quiet mode on or off (don't report bad packets)
                 quiet = value;
                 break;
-
-
-
-
-
-
-
-
+            case 'z': // put the ATmega in ultra-low power mode (reset needed)
+                if (value == 123) {
+                    delay(10);
+                    rf12_sleep(RF12_SLEEP);
+                    cli();
+                    Sleepy::powerDown();
+                }
+                break;
         }
         value = top = 0;
         memset(stack, 0, sizeof stack);
@@ -689,16 +687,16 @@ static void handleInput (char c) {
 }
 
 void setup() {
-    Serial.begin(57600);
-    Serial.print("\n[RF12demo.8]");
-
+    Serial.begin(SERIAL_BAUD);
+    Serial.print("\n[RF12demo.9]");
+    activityLed(0);
 
     if (rf12_config()) {
         config.nodeId = eeprom_read_byte(RF12_EEPROM_ADDR);
         config.group = eeprom_read_byte(RF12_EEPROM_ADDR + 1);
     } else {
-        config.nodeId = 0x41; // node A1 @ 433 MHz
-        config.group = 0xD4;
+        config.nodeId = 0x41; // 433 MHz, node 1
+        config.group = 0xD4;  // default group 212
         saveConfig();
     }
 

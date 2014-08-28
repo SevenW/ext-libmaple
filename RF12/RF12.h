@@ -47,10 +47,12 @@
 #define RF12_WAKEUP -1
 
 //define spi ports //currently a bit of a hack
-#define HARDWARESPIPORT 2 //the connected hardware spi port.
+//#define HARDWARESPIPORT 1 //the connected hardware spi port.
 
 extern volatile uint16_t rf12_crc;  // running crc value, should be zero at end
 extern volatile uint8_t rf12_buf[]; // recv/xmit buf including hdr & crc bytes
+//TODO: try to debug reception
+extern volatile uint16_t rf12_statusbuf[]; // recv/xmit buf including hdr & crc bytes
 extern long rf12_seq;               // seq number of encrypted packet (or -1)
 
 extern volatile int testvar; // a debugging variable
@@ -79,6 +81,9 @@ void rf12_sendStart(uint8_t hdr);
 void rf12_sendStart(uint8_t hdr, const void* ptr, uint8_t len);
 // deprecated: use rf12_sendStart(hdr,ptr,len) followed by rf12_sendWait(sync)
 void rf12_sendStart(uint8_t hdr, const void* ptr, uint8_t len, uint8_t sync);
+
+/// This variant loops on rf12_canSend() and then calls rf12_sendStart() asap.
+void rf12_sendNow(uint8_t hdr, const void* ptr, uint8_t len);
 
 // wait for send to finish, sleep mode: 0=none, 1=idle, 2=standby, 3=powerdown
 void rf12_sendWait (uint8_t mode);
@@ -111,5 +116,7 @@ uint16_t rf12_control(uint16_t cmd);
 
 //void rf12_interrupt(void);
 
+// crc16 used for jeenode communication, and configuration storage 
+uint16_t _crc16_update(uint16_t crc, uint8_t a);
 
 #endif
